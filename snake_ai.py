@@ -4,7 +4,7 @@ from snake import Snake, SnakeGame, Food, Vector
 import random
 from collections import deque
 import pygame
-
+# hej
 class NeuralNetwork:
     def __init__(self, input_size: int = 24, hidden_size: int = 16, output_size: int = 4):
         self.weights1 = np.random.randn(input_size, hidden_size) / np.sqrt(input_size)
