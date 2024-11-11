@@ -4,7 +4,7 @@ from snake import Snake, SnakeGame, Food, Vector
 import random
 from collections import deque
 import pygame
-# hej
+
 class NeuralNetwork:
     def __init__(self, input_size: int = 24, hidden_size: int = 16, output_size: int = 4):
         self.weights1 = np.random.randn(input_size, hidden_size) / np.sqrt(input_size)
@@ -101,6 +101,7 @@ class GeneticAlgorithm:
         self.population = [AISnake(game) for _ in range(population_size)]
         self.generation = 0
         self.best_score = 0
+        self.avg_fitness = 0
         
     def calculate_fitness(self, snake: AISnake) -> float:
         return snake.score * 100 + snake.lifetime * 0.1
@@ -133,9 +134,13 @@ class GeneticAlgorithm:
         best_snake = self.population[0]
         self.best_score = max(self.best_score, best_snake.score)
         
+        # Calculate average fitness
+        total_fitness = sum(self.calculate_fitness(snake) for snake in self.population)
+        self.avg_fitness = total_fitness / len(self.population)
+        
         new_population = []
         new_population.append(AISnake(self.game))
-        new_population[0].brain = self.population[0].brain
+        new_population[0].brain = self.population[0].brain  # Keep the best performer
         
         while len(new_population) < self.population_size:
             parent1 = self.select_parent()
@@ -147,13 +152,107 @@ class GeneticAlgorithm:
         self.generation += 1
 
 class AISnakeGame(SnakeGame):
-    def __init__(self, xsize: int = 30, ysize: int = 30, scale: int = 15):
-        super().__init__(xsize, ysize, scale)
+    def __init__(self, xsize: int = 30, ysize: int = 30, scale: int = 20):
+        # Calculate total window size including stats panel
+        self.stats_width = 300  # Width of stats panel
+        total_width = (xsize * scale) + self.stats_width
+        total_height = ysize * scale
+        
+        # Initialize pygame but override screen creation
+        self.grid = Vector(xsize, ysize)
+        self.scale = scale
+        pygame.init()
+        self.screen = pygame.display.set_mode((total_width, total_height))
+        self.clock = pygame.time.Clock()
+        
+        # Create separate surface for game area
+        self.game_surface = pygame.Surface((xsize * scale, ysize * scale))
+        
+        self.color_snake_head = (0, 255, 0)
+        self.color_food = (255, 0, 0)
+        
+        # Stats initialization
         self.ga = GeneticAlgorithm(self)
+        self.generation_stats = []
+        self.current_gen_scores = []
+        self.font = pygame.font.Font(None, 24)
+        self.stats_surface = pygame.Surface((self.stats_width, total_height))
+        
+        # History tracking for plotting
+        self.score_history = []
+        self.max_history_points = 50
+        
+    def draw_stats(self, current_snake):
+        # Clear stats surface
+        self.stats_surface.fill((40, 40, 40))
+        
+        # Draw separator line
+        pygame.draw.line(self.stats_surface, (200, 200, 200), (0, 0), (0, self.grid.y * self.scale), 2)
+        
+        # Calculate stats
+        if self.current_gen_scores:
+            avg_score = sum(self.current_gen_scores) / len(self.current_gen_scores)
+            max_score = max(self.current_gen_scores)
+        else:
+            avg_score = 0
+            max_score = 0
+            
+        # Create stats text
+        stats_texts = [
+            ("Training Stats", (255, 255, 0)),  # Title in yellow
+            ("", None),  # Spacing
+            (f"Generation: {self.ga.generation}", (255, 255, 255)),
+            (f"Population: {len(self.current_gen_scores)}/{self.ga.population_size}", (255, 255, 255)),
+            (f"Best Score Ever: {self.ga.best_score}", (0, 255, 0)),  # Green for best score
+            ("", None),  # Spacing
+            ("Current Generation", (255, 255, 0)),  # Subtitle
+            (f"Avg Score: {avg_score:.1f}", (255, 255, 255)),
+            (f"Best Score: {max_score}", (255, 255, 255)),
+            ("", None),  # Spacing
+            ("Current Snake", (255, 255, 0)),  # Subtitle
+            (f"Score: {current_snake.score}", (255, 255, 255)),
+            (f"Lifetime: {current_snake.lifetime}", (255, 255, 255)),
+            (f"Moves without food: {current_snake.moves_without_food}", (255, 255, 255))
+        ]
+        
+        # Draw stats text
+        y_offset = 20
+        for text, color in stats_texts:
+            if color is not None:  # Skip if this is just spacing
+                text_surface = self.font.render(text, True, color)
+                self.stats_surface.blit(text_surface, (20, y_offset))
+            y_offset += 25
+            
+        # Store and draw score history
+        if self.current_gen_scores:
+            self.score_history.append(avg_score)
+            if len(self.score_history) > self.max_history_points:
+                self.score_history = self.score_history[-self.max_history_points:]
+            
+            # Draw score history graph
+            if len(self.score_history) > 1:
+                graph_rect = pygame.Rect(20, y_offset + 30, self.stats_width - 40, 100)
+                pygame.draw.rect(self.stats_surface, (60, 60, 60), graph_rect)
+                
+                max_score_history = max(max(self.score_history), 1)  # Avoid division by zero
+                points = []
+                for i, score in enumerate(self.score_history):
+                    x = graph_rect.left + (i * graph_rect.width // (self.max_history_points - 1))
+                    y = graph_rect.bottom - (score * graph_rect.height // max_score_history)
+                    points.append((x, y))
+                
+                if len(points) > 1:
+                    pygame.draw.lines(self.stats_surface, (0, 255, 0), False, points, 2)
+                
+                # Draw graph labels
+                label = self.font.render("Score History", True, (255, 255, 0))
+                self.stats_surface.blit(label, (20, y_offset))
         
     def run_training(self, generations: int = 100):
         for generation in range(generations):
-            for snake in self.ga.population:
+            self.current_gen_scores = []
+            
+            for snake_idx, snake in enumerate(self.ga.population):
                 running = True
                 food = Food(game=self)
                 
@@ -178,14 +277,28 @@ class AISnakeGame(SnakeGame):
                         snake.moves_without_food = 0
                         food = Food(game=self)
                     
-                    self.screen.fill('black')
+                    # Clear game surface
+                    self.game_surface.fill('black')
+                    
+                    # Draw snake and food on game surface
                     for i, p in enumerate(snake.body):
-                        pygame.draw.rect(self.screen,
+                        pygame.draw.rect(self.game_surface,
                                      (0, max(128, 255 - i * 8), 0),
                                      self.block(p))
-                    pygame.draw.rect(self.screen, self.color_food, self.block(food.p))
+                    pygame.draw.rect(self.game_surface, self.color_food, self.block(food.p))
+                    
+                    # Update stats
+                    self.current_gen_scores = [s.score for s in self.ga.population[:snake_idx+1]]
+                    self.draw_stats(snake)
+                    
+                    # Draw everything to main screen
+                    self.screen.blit(self.game_surface, (0, 0))
+                    self.screen.blit(self.stats_surface, (self.grid.x * self.scale, 0))
+                    
                     pygame.display.flip()
                     self.clock.tick(30)
+                
+                self.current_gen_scores.append(snake.score)
             
             self.ga.evolve()
             print(f"Generation {self.ga.generation}: Best Score = {self.ga.best_score}")
