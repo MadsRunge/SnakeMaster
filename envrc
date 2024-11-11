@@ -1,0 +1,5 @@
+
+curl https://pyenv.run | bash
+pyenv install 3.10.4
+madsrunge@MacBook-Pro-tilhrende-Mads Snake % pyenv local 3.10.4
+madsrunge@MacBook-Pro-tilhrende-Mads Snake % python --version
