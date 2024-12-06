@@ -11,6 +11,7 @@ import pygame
 # --------------------
 # Spilkode (uændret fra dit originale spil)
 # --------------------
+
 class Vector:
     def __init__(self, x: int = 0, y: int = 0):
         self.x = x
@@ -23,7 +24,8 @@ class Vector:
         return Vector(self.x + other.x, self.y + other.y)
 
     def within(self, scope: 'Vector') -> bool:
-        return self.x <= scope.x and self.x >= 0 and self.y <= scope.y and self.y >= 0
+        # Ændret til at bruge strict mindre end for at undgå at gå ud over grænserne
+        return self.x < scope.x and self.x >= 0 and self.y < scope.y and self.y >= 0
 
     def __eq__(self, other: 'Vector') -> bool:
         return self.x == other.x and self.y == other.y
@@ -256,146 +258,126 @@ class SimpleModel:
 # --------------------
 # Simulering og træning
 # --------------------
-def simulate_game(agent, game):
+def simulate_game(agent, game, render=False):
+    """
+    Simuler et spil af snake. render=True vil vise spillet visuelt.
+    """
     snake = Snake(game=game)
     food = Food(game=game)
     steps = 0
     food_count = 0
     efficiency_score = 0
+    
+    last_food_distance = ((food.p.x - snake.p.x)**2 + (food.p.y - snake.p.y)**2)**0.5
 
     while steps < 500:  # Max steps
-        # Generér observation baseret på slangens position og omgivelser
         obs = update_input_tables(snake, food, game.grid)
-
-        # Debugging for at vise observationen (kan fjernes, når du er tilfreds med resultatet)
-        #print(f"Observation: {obs}")
-
-        # Få agentens handling baseret på observationen
         action = agent.action(obs)
-
-        # Oversæt handlingen til en bevægelsesvektor
         snake.v = [Vector(0, -1), Vector(0, 1), Vector(1, 0), Vector(-1, 0)][action]
-
-        # Flyt slangen
         snake.move()
 
-
-        # Tjek for kollisioner med vægge eller egen krop
         if not snake.p.within(game.grid) or snake.cross_own_tail:
             break
 
-        # Tjek for mad
+        # Opdater efficiency score baseret på afstand til mad
+        current_food_distance = ((food.p.x - snake.p.x)**2 + (food.p.y - snake.p.y)**2)**0.5
+        if current_food_distance < last_food_distance:
+            efficiency_score += 1
+        last_food_distance = current_food_distance
+
         if snake.p == food.p:
             snake.add_score()
-            food = Food(game=game)  # Generér ny mad
+            food = Food(game=game)
             food_count += 1
+            last_food_distance = ((food.p.x - snake.p.x)**2 + (food.p.y - snake.p.y)**2)**0.5
+
+        if render:
+            game.screen.fill((0, 0, 0))
+            pygame.draw.rect(game.screen, game.color_food, game.block(food.p))
+            for segment in snake.body:
+                pygame.draw.rect(game.screen, game.color_snake_head, game.block(segment))
+            pygame.display.update()
+            game.clock.tick(10)
 
         steps += 1
 
     return steps, food_count, efficiency_score
 
-
-# Breed de 50% bedste agenter
-# Breed de 50% bedste agenter
-def train_agents(agents, generations, mutation_rate):
-    for generation in range(generations):
-        fitness_scores = []
-        food_counts = []  # For at gemme, hvor meget mad de spiser
-        for agent in agents:
-            game = SnakeGame()
-            steps, food_count, efficiency_score = simulate_game(agent, game)
-            fitness_scores.append(fitness_function(agent, steps, food_count, efficiency_score))
-            food_counts.append(food_count)
-
-        best_fitness = max(fitness_scores)
-        best_food = max(food_counts)
-        print(f'Generation {generation + 1}: Best fitness = {best_fitness}, Max food eaten = {best_food}')
-
-        # Sort agents by fitness
-        sorted_agents = [agent for _, agent in sorted(zip(fitness_scores, agents), key=lambda pair: pair[0], reverse=True)]
-        top_agents = sorted_agents[:len(sorted_agents) // 2]
-
-        # Gem den bedste agent til at vise spillet
-        best_agent = top_agents[0]
-
-        # Vis spillet med den bedste agent fra denne generation
-        show_game_with_best_agent(best_agent)
-
-        # Breed the top agents
-        new_agents = []
-        while len(new_agents) < len(agents):
-            parent1, parent2 = random.sample(top_agents, 2)
-            child = parent1 + parent2
-            child.mutate(mutation_rate)
-            new_agents.append(child)
-
-        agents = new_agents  # Replace old population with new population
-
-
-# Det ligner den stopper med at træne efter vi har set den første agent. Tjek dette!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 def show_game_with_best_agent(agent):
+    """
+    Vis spillet med den bedste agent.
+    """
     game = SnakeGame()
-    snake = Snake(game=game)
-    food = Food(game=game)
-    steps = 0
-    food_count = 0
-    efficiency_score = 0
+    # Simuler spillet med rendering aktiveret
+    steps, food_count, _ = simulate_game(agent, game, render=True)
+    # Vent lidt så vi kan se resultatet
+    pygame.time.wait(1000)
+    return steps, food_count
 
-    running = True
-    while running:
-        # Håndter pygame begivenheder
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:  # Hvis brugeren lukker vinduet
-                running = False
+def train_agents(agents, generations, mutation_rate):
+    """
+    Træn agenterne gennem flere generationer.
+    """
+    try:
+        pygame.init()
+        
+        for generation in range(generations):
+            fitness_scores = []
+            food_counts = []
+            
+            # Simuler alle agenter (uden rendering)
+            for agent in agents:
+                game = SnakeGame()
+                steps, food_count, efficiency_score = simulate_game(agent, game, render=False)
+                fitness_scores.append(fitness_function(agent, steps, food_count, efficiency_score))
+                food_counts.append(food_count)
 
-        # Generér observation baseret på slangens position og omgivelser
-        obs = update_input_tables(snake, food, game.grid)
+            best_fitness = max(fitness_scores)
+            best_food = max(food_counts)
+            print(f'Generation {generation + 1}: Best fitness = {best_fitness}, Max food eaten = {best_food}')
 
-        # Få agentens handling baseret på observationen
-        action = agent.action(obs)
+            # Sort agents by fitness
+            sorted_agents = [agent for _, agent in sorted(zip(fitness_scores, agents), 
+                                                        key=lambda pair: pair[0], reverse=True)]
+            top_agents = sorted_agents[:len(sorted_agents) // 2]
+            best_agent = top_agents[0]
+            
+            # Vis den bedste agent
+            steps, food = show_game_with_best_agent(best_agent)
+            print(f"Best agent demonstration - Steps: {steps}, Food eaten: {food}")
+            
+            # Vent på bruger input
+            print("Press any key to continue to next generation...")
+            waiting = True
+            while waiting:
+                try:
+                    event = pygame.event.wait()  # Brug wait i stedet for get
+                    if event.type in (pygame.KEYDOWN, pygame.MOUSEBUTTONDOWN):
+                        waiting = False
+                    elif event.type == pygame.QUIT:
+                        return
+                except pygame.error:
+                    # Hvis vi får en pygame fejl, prøv at geninitialisere
+                    pygame.init()
+                    waiting = False
 
-        # Oversæt handlingen til en bevægelsesvektor
-        snake.v = [Vector(0, -1), Vector(0, 1), Vector(1, 0), Vector(-1, 0)][action]
+            # Breed new agents
+            new_agents = []
+            while len(new_agents) < len(agents):
+                parent1, parent2 = random.sample(top_agents, 2)
+                child = parent1 + parent2
+                child.mutate(mutation_rate)
+                new_agents.append(child)
 
-        # Flyt slangen
-        snake.move()
+            agents = new_agents
+            
+    finally:
+        pygame.quit()
 
-        # Tjek for kollisioner med vægge eller egen krop
-        if not snake.p.within(game.grid) or snake.cross_own_tail:
-            running = False
-
-        # Tjek for mad
-        if snake.p == food.p:
-            snake.add_score()
-            food = Food(game=game)  # Generér ny mad
-            food_count += 1
-
-        # Opdater skærmen
-        game.screen.fill((0, 0, 0))  # Ryd skærmen
-        pygame.draw.rect(game.screen, game.color_food, game.block(food.p))
-        for segment in snake.body:
-            pygame.draw.rect(game.screen, game.color_snake_head, game.block(segment))
-
-        pygame.display.update()  # Opdater skærmen
-
-        # Hastighed på spillet (kan justeres)
-        game.clock.tick(10)
-
-        steps += 1
-
-    pygame.quit()
-
-
-
-
-
-# --------------------
-# Start træning
-# --------------------
 if __name__ == "__main__":
-    population_size = 500  # Brug færre agenter for at teste
-    generations = 50  # Øg antallet af generationer for at give træningen mere tid
+    population_size = 100  # Øget population size
+    generations = 50
     mutation_rate = 0.1
 
-    agents = [SimpleModel(dims=(8, 12, 4)) for _ in range(population_size)]  
+    agents = [SimpleModel(dims=(8, 12, 4)) for _ in range(population_size)]
     train_agents(agents, generations, mutation_rate)
