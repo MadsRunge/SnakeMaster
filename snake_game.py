@@ -2,7 +2,7 @@ import random
 from collections import deque
 from typing import Sequence
 
-RENDER_ENABLED = False # Toggle this to enable/disable visualization
+RENDER_ENABLED = True # Toggle this to enable/disable visualization
 
 if RENDER_ENABLED:
     import pygame

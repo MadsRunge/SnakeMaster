@@ -64,14 +64,8 @@ def single_point_crossover(parent1: SimpleModel, parent2: SimpleModel) -> Simple
     return child
 
 def evaluate_fitness(model: SimpleModel, game: SnakeGame, initial_max_steps: int = 200) -> Tuple[float, int]:
-    """
-    Forbedret fitnessfunktion:
-    - Start med initial_max_steps
-    - For hvert mad stykke spist, tilføj 50 ekstra steps
-    - Beløn hurtig madspisning: Jo færre steps mellem mad, jo højere bonus
-    - Hvis > 50 steps uden mad -> stop simulation for at undgå "stalling"
-    """
-
+    ABSOLUTE_MAX_STEPS = 2000 
+    
     model.games_played += 1
     snake = Snake(game=game)
     food = Food(game=game)
@@ -79,40 +73,38 @@ def evaluate_fitness(model: SimpleModel, game: SnakeGame, initial_max_steps: int
     food_eaten = 0
     total_steps = 0
     steps_since_last_food = 0
-    max_steps = initial_max_steps
+    max_steps = min(initial_max_steps, ABSOLUTE_MAX_STEPS)
 
-    while total_steps < max_steps:
+    while total_steps < max_steps and total_steps < ABSOLUTE_MAX_STEPS:
         state = get_input_state(snake, food, game.grid)
         action = model.get_action(state)
         snake.v = [Vector(0, -1), Vector(0, 1), Vector(1, 0), Vector(-1, 0)][action]
         snake.move()
         
         if not snake.p.within(game.grid) or snake.cross_own_tail:
-            break  # Død
+            break
 
         steps_since_last_food += 1
 
         if snake.p == food.p:
             food_eaten += 1
-            # Forlæng spilletid pr. mad
-            max_steps += 50
-            # Bonus for hurtig spisning: jo færre steps siden sidst, jo større bonus
-            # Eksempel: bonus = max(0, 50 - steps_since_last_food)
-            # Justér efter behov
+            max_steps = min(max_steps + 30, ABSOLUTE_MAX_STEPS)
             steps_since_last_food = 0
+            snake.add_score()
             food = Food(game=game)
             
-        # Hvis slangen ikke spiser noget mad i f.eks. 50 steps, stop
         if steps_since_last_food > 50:
             break
 
         total_steps += 1
 
-    # Basis fitness
-    fitness = food_eaten * 1000 + total_steps
+    base_fitness = food_eaten * 75
+    efficiency_bonus = 0
+    if total_steps > 0 and food_eaten > 0:
+        efficiency_bonus = (food_eaten / total_steps) * 75
+    
+    fitness = base_fitness + efficiency_bonus
 
-    # Mulighed for yderligere finjustering:
-    # Giv en lille straf, hvis ingen mad er spist
     if food_eaten == 0:
         fitness *= 0.5
 
@@ -149,7 +141,14 @@ def visualize_game(model: SimpleModel, game: SnakeGame, max_steps: int = 300,
 
         if not snake.p.within(game.grid) or snake.cross_own_tail:
             pygame.quit()
-            return evaluate_fitness(model, game, steps)
+            base_fitness = food_eaten * 100
+            efficiency_bonus = 0
+            if steps > 0 and food_eaten > 0:
+                efficiency_bonus = (food_eaten / steps) * 50
+            fitness = base_fitness + efficiency_bonus
+            if food_eaten == 0:
+                fitness *= 0.5
+            return fitness, food_eaten
             
         if snake.p == food.p:
             food_eaten += 1
@@ -179,9 +178,16 @@ def visualize_game(model: SimpleModel, game: SnakeGame, max_steps: int = 300,
         clock.tick(fps)
     
     pygame.quit()
-    return food_eaten * 1000 + steps, food_eaten 
+    base_fitness = food_eaten * 100
+    efficiency_bonus = 0
+    if steps > 0 and food_eaten > 0:
+        efficiency_bonus = (food_eaten / steps) * 50
+    fitness = base_fitness + efficiency_bonus
+    if food_eaten == 0:
+        fitness *= 0.5
+    return fitness, food_eaten
 
-def tournament_selection(population: List[SimpleModel], fitness_scores: List[float], k: int = 4) -> SimpleModel:
+def tournament_selection(population: List[SimpleModel], fitness_scores: List[float], k: int = 6) -> SimpleModel:
     """
     Tournament selection:
     - Vælg k tilfældige individer fra populationen
@@ -239,19 +245,16 @@ def train_population(population_size: int = 200, generations: int = 100,
         print(f"  Bedste fitness nogensinde: {best_fitness_ever:.1f}")
         print("-" * 40)
         
-        # Sorter populationen efter fitness
         sorted_pairs = sorted(zip(fitness_scores, population), key=lambda pair: pair[0], reverse=True)
         population = [x for _, x in sorted_pairs]
         
         next_population = []
-        # Elite
         next_population.extend(population[:elite_size])
         
-        # Resten via tournament selection + crossover + mutation
         while len(next_population) < population_size:
             parent1 = tournament_selection(population, fitness_scores, k=4)
             parent2 = tournament_selection(population, fitness_scores, k=4)
-            child = single_point_crossover(parent1, parent2)  # eller single_point_crossover(parent1, parent2)
+            child = single_point_crossover(parent1, parent2)
             child.mutate(mutation_rate, mutation_scale)
             next_population.append(child)
         
@@ -264,12 +267,11 @@ if __name__ == "__main__":
     parser.add_argument('--visual', action='store_true', help='Vis træningen visuelt')
     args = parser.parse_args()
     
-    # Træningsparametre
-    POPULATION_SIZE = 400
+    POPULATION_SIZE = 200
     GENERATIONS = 100
     MUTATION_RATE = 0.05
     MUTATION_SCALE = 0.1
-    ELITE_SIZE = 10
+    ELITE_SIZE = 15
     INITIAL_MAX_STEPS = 200
     
     best_model = train_population(
