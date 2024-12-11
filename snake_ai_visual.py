@@ -3,92 +3,126 @@ from typing import Tuple, List
 from snake_game import SnakeGame, Snake, Food, Vector, get_input_state
 import pygame
 import time
+import argparse
+import random
+import matplotlib.pyplot as plt
+from pathlib import Path
+import json
+import datetime
+from dataclasses import dataclass
 
 class SimpleModel:
-    """
-    En simpel neural network model der styrer slangen.
-    Input: 8 neuroner (4 for mad position, 4 for forhindringer)
-    Output: 4 neuroner (op, ned, højre, venstre)
-    """
     def __init__(self, input_size: int = 8, hidden_size: int = 12, output_size: int = 4):
-        # Initialiserer vægte med små tilfældige værdier
-        self.hidden_weights = np.random.randn(input_size, hidden_size) * 0.1
-        self.output_weights = np.random.randn(hidden_size, output_size) * 0.1
+        self.hidden_weights = np.random.uniform(-1, 1, (input_size, hidden_size))
+        self.output_weights = np.random.uniform(-1, 1, (hidden_size, output_size))
         self.games_played = 0
 
+    def save_weights(self, filepath: str):
+        weights = {
+            'hidden_weights': self.hidden_weights.tolist(),
+            'output_weights': self.output_weights.tolist()
+        }
+        with open(filepath, 'w') as f:
+            json.dump(weights, f)
+
+    @classmethod
+    def load_weights(cls, filepath: str) -> 'SimpleModel':
+        model = cls()
+        with open(filepath, 'r') as f:
+            weights = json.load(f)
+        model.hidden_weights = np.array(weights['hidden_weights'])
+        model.output_weights = np.array(weights['output_weights'])
+        return model
+
     def get_action(self, observations: List[int]) -> int:
-        """
-        Bestemmer slangens næste bevægelse baseret på spil-tilstanden.
-        Returnerer: 0 (op), 1 (ned), 2 (højre), eller 3 (venstre)
-        """
-        # Konverterer input til numpy array
         x = np.array(observations, dtype=np.float32)
-        
-        # Forward pass gennem netværket
-        hidden = np.maximum(0, x @ self.hidden_weights)  # ReLU aktivering
+        hidden = np.tanh(x @ self.hidden_weights)
         output = hidden @ self.output_weights
-        
-        # Find gyldige bevægelser (hvor der ikke er forhindringer)
-        obstacles = observations[4:]  # De sidste 4 værdier er forhindringer
-        valid_moves = [i for i, obs in enumerate(obstacles) if obs == 0]
-        
-        if valid_moves:
-            # Vælg den bedste gyldige bevægelse
-            valid_outputs = [output[i] for i in valid_moves]
-            return valid_moves[np.argmax(valid_outputs)]
-        return np.argmax(output)  # Hvis ingen gyldige træk, vælg bedste output
+        exp_output = np.exp(output)
+        probabilities = exp_output / exp_output.sum()
+        return np.argmax(probabilities)
 
-    def mutate(self, mutation_rate: float = 0.1, mutation_scale: float = 0.1):
-        """
-        Muterer modellens vægte med en given sandsynlighed og styrke.
-        """
-        # Mutation af hidden layer vægte
-        mask = np.random.random(self.hidden_weights.shape) < mutation_rate
-        self.hidden_weights += mask * np.random.randn(*self.hidden_weights.shape) * mutation_scale
+    def mutate(self, mutation_rate: float = 0.05, mutation_scale: float = 0.1):
+        for weights in [self.hidden_weights, self.output_weights]:
+            for w_idx in np.ndindex(weights.shape):
+                if random.random() < mutation_rate:
+                    weights[w_idx] += np.random.normal(0, mutation_scale)
+
+class TrainingManager:
+    def __init__(self):
+        self.timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.base_dir = Path(f"training_run_1")
+        self.generations_dir = self.base_dir / "generations"
+        self.best_ever_dir = self.base_dir / "best_ever"
         
-        # Mutation af output layer vægte
-        mask = np.random.random(self.output_weights.shape) < mutation_rate
-        self.output_weights += mask * np.random.randn(*self.output_weights.shape) * mutation_scale
+        self.base_dir.mkdir(parents=True)
+        self.generations_dir.mkdir()
+        self.best_ever_dir.mkdir()
+        
+    def save_plot(self, plt):
+        plt.savefig(self.base_dir / "training_progress.png")
+        plt.close()
+        
+    def save_generation_best(self, model, generation: int, fitness: float, food_eaten: int, snake: Snake, food: Food, food_positions: List[Food], max_steps: int):
+        gen_dir = self.generations_dir / f"generation_{generation}"
+        gen_dir.mkdir()
+        
+        food_pos_list = [{"x": f.p.x, "y": f.p.y} for f in food_positions]
+        random_state = list(random.getstate())  # Convert tuple to list
+        
+        game_state = {
+            "generation": generation,
+            "fitness": fitness,
+            "food_eaten": food_eaten,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "initial_state": {
+                "snake_position": {"x": snake.p.x, "y": snake.p.y},
+                "food_position": {"x": food.p.x, "y": food.p.y},
+                "random_seed": random_state,  # Now a list
+                "food_positions": food_pos_list,
+                "max_steps": max_steps
+            }
+        }
+        
+        model.save_weights(str(gen_dir / "weights.json"))
+        with open(gen_dir / "metadata.json", "w") as f:
+            json.dump(game_state, f, indent=2)
 
-def crossover(parent1: SimpleModel, parent2: SimpleModel) -> SimpleModel:
-    """
-    Laver en ny model ved at kombinere to forældres vægte med vægtet gennemsnit.
-    """
-    child = SimpleModel()
-    weight = 0.5  # 50/50 vægtning mellem forældrene
-    
-    # Vægtet gennemsnit af vægtene
-    child.hidden_weights = parent1.hidden_weights * weight + parent2.hidden_weights * (1-weight)
-    child.output_weights = parent1.output_weights * weight + parent2.output_weights * (1-weight)
-    
-    return child
+    def save_best_ever(self, model, generation: int, fitness: float, food_eaten: int, snake: Snake, food: Food, food_positions: List[Food], max_steps: int):
+        model.save_weights(str(self.best_ever_dir / "weights.json"))
+        
+        food_pos_list = [{"x": f.p.x, "y": f.p.y} for f in food_positions]
+        random_state = list(random.getstate())  # Convert tuple to list
+        
+        metadata = {
+            "generation": generation,
+            "fitness": fitness,
+            "food_eaten": food_eaten,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "initial_state": {
+                "snake_position": {"x": snake.p.x, "y": snake.p.y},
+                "food_position": {"x": food.p.x, "y": food.p.y},
+                "random_seed": random_state,  # Now a list
+                "food_positions": food_pos_list,
+                "max_steps": max_steps
+            }
+        }
+        with open(self.best_ever_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
 
-def visualize_game(model: SimpleModel, game: SnakeGame, max_steps: int = 300, 
-                  generation: int = 0, fps: int = 20) -> Tuple[float, int]:
-    """
-    Kører et spil med visualisering og returnerer fitness og mad spist.
-    """
+def evaluate_fitness(model: SimpleModel, game: SnakeGame, initial_max_steps: int = 200) -> Tuple[float, int, Snake, Food, List[Food], int]:
+    ABSOLUTE_MAX_STEPS = 2000
     snake = Snake(game=game)
     food = Food(game=game)
-    steps = 0
+    initial_snake = snake
+    initial_food = food
+    food_positions = [food]
     food_eaten = 0
-    clock = pygame.time.Clock()
-    
-    # Opsæt tekst
-    pygame.font.init()
-    font = pygame.font.SysFont('arial', 16)
-    
-    while steps < max_steps:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                pygame.quit()
-                return steps + (food_eaten * 200), food_eaten
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE:  # Tryk space for at øge hastighed
-                    fps = 100
-                if event.key == pygame.K_BACKSPACE:  # Tryk backspace for normal hastighed
-                    fps = 20
-                
+    total_steps = 0
+    steps_since_last_food = 0
+    max_steps = min(initial_max_steps, ABSOLUTE_MAX_STEPS)
+
+    while total_steps < max_steps and total_steps < ABSOLUTE_MAX_STEPS:
         state = get_input_state(snake, food, game.grid)
         action = model.get_action(state)
         snake.v = [Vector(0, -1), Vector(0, 1), Vector(1, 0), Vector(-1, 0)][action]
@@ -96,126 +130,167 @@ def visualize_game(model: SimpleModel, game: SnakeGame, max_steps: int = 300,
         
         if not snake.p.within(game.grid) or snake.cross_own_tail:
             break
-            
+
+        steps_since_last_food += 1
         if snake.p == food.p:
+            food_eaten += 1
+            max_steps = min(max_steps + 30, ABSOLUTE_MAX_STEPS)
+            steps_since_last_food = 0
             snake.add_score()
             food = Food(game=game)
-            food_eaten += 1
+            food_positions.append(food)
             
-        steps += 1
-        
-        # Opdater display
-        game.screen.fill((0, 0, 0))
-        
-        # Tegn mad og slange
-        pygame.draw.rect(game.screen, (255, 0, 0), game.block(food.p))
-        for segment in snake.body:
-            pygame.draw.rect(game.screen, (0, 255, 0), game.block(segment))
-            
-        # Vis information
-        info_texts = [
-            f'Generation: {generation}',
-            f'Steps: {steps}',
-            f'Food: {food_eaten}',
-            f'FPS: {fps} (SPACE: hurtig, BACKSPACE: normal)'
-        ]
-        
-        for i, text in enumerate(info_texts):
-            text_surface = font.render(text, True, (255, 255, 255))
-            game.screen.blit(text_surface, (10, 10 + i * 20))
-        
-        pygame.display.update()
-        clock.tick(fps)
-        
-    return steps + (food_eaten * 200), food_eaten
+        if steps_since_last_food > 50:
+            break
 
-def train_population_visual(population_size: int = 200, generations: int = 100, 
-                          mutation_rate: float = 0.1, mutation_scale: float = 0.1,
-                          elite_size: int = 10, max_steps: int = 300):
-    """
-    Træner population med visualisering af den bedste agent i hver generation.
-    """
-    # Initialiser spil
+        total_steps += 1
+
+    base_fitness = food_eaten * 75
+    efficiency_bonus = (food_eaten / total_steps) * 75 if total_steps > 0 and food_eaten > 0 else 0
+    fitness = base_fitness + efficiency_bonus
+    if food_eaten == 0:
+        fitness *= 0.5
+
+    return fitness, food_eaten, initial_snake, initial_food, food_positions, max_steps
+
+def uniform_crossover(parent1: SimpleModel, parent2: SimpleModel) -> SimpleModel:
+    child = SimpleModel()
+    for weights_name in ['hidden_weights', 'output_weights']:
+        parent1_weights = getattr(parent1, weights_name)
+        parent2_weights = getattr(parent2, weights_name)
+        mask = np.random.rand(*parent1_weights.shape) < 0.5
+        setattr(child, weights_name, np.where(mask, parent1_weights, parent2_weights))
+    return child
+
+def single_point_crossover(parent1: SimpleModel, parent2: SimpleModel) -> SimpleModel:
+    child = SimpleModel()
+    
+    # Hidden weights crossover
+    h_size = parent1.hidden_weights.size
+    cut = random.randint(1, h_size-1)
+    h_flat1 = parent1.hidden_weights.flatten()
+    h_flat2 = parent2.hidden_weights.flatten()
+    child_h = np.concatenate([h_flat1[:cut], h_flat2[cut:]])
+    child.hidden_weights = child_h.reshape(parent1.hidden_weights.shape)
+
+    # Output weights crossover
+    o_size = parent1.output_weights.size
+    cut = random.randint(1, o_size-1)
+    o_flat1 = parent1.output_weights.flatten()
+    o_flat2 = parent2.output_weights.flatten()
+    child_o = np.concatenate([o_flat1[:cut], o_flat2[cut:]])
+    child.output_weights = child_o.reshape(parent1.output_weights.shape)
+    
+    return child
+
+def tournament_selection(population: List[SimpleModel], fitness_scores: List[float], k: int = 6) -> SimpleModel:
+    selected_indices = np.random.choice(len(population), size=k, replace=False)
+    best_idx = selected_indices[np.argmax([fitness_scores[i] for i in selected_indices])]
+    return population[best_idx]
+
+def train_population(population_size: int = 200, generations: int = 100, 
+                    mutation_rate: float = 0.05, mutation_scale: float = 0.1,
+                    elite_size: int = 10, initial_max_steps: int = 200):
+    
+    manager = TrainingManager()
     game = SnakeGame()
     population = [SimpleModel() for _ in range(population_size)]
     best_fitness_ever = 0
     best_model_ever = None
     best_food_ever = 0
     
+    max_food_history = []
+    avg_food_history = []
+    
     try:
         for generation in range(generations):
             fitness_scores = []
             food_scores = []
+            best_states = None
             
-            # Evaluer alle modeller uden visualisering først
-            for i, model in enumerate(population):
-                print(f"\rEvaluerer model {i+1}/{population_size}", end="")
-                fitness, food_count = visualize_game(model, game, max_steps, generation + 1)
+            print(f"Evaluating generation {generation + 1}")
+            for model in population:
+                game_test = SnakeGame()
+                fitness, food_count, initial_snake, initial_food, food_positions, max_steps = evaluate_fitness(model, game_test, initial_max_steps)
                 fitness_scores.append(fitness)
                 food_scores.append(food_count)
-            print()  # Ny linje efter progress
+                
+                if not best_states or fitness > max(fitness_scores[:-1]):
+                    best_states = (initial_snake, initial_food, food_positions, max_steps)
             
-            # Find den bedste model i denne generation
             best_idx = np.argmax(fitness_scores)
             best_fitness = fitness_scores[best_idx]
             best_model = population[best_idx]
             
-            # Gem den bedste model nogensinde
+            initial_snake, initial_food, food_positions, max_steps = best_states
+            manager.save_generation_best(best_model, generation, best_fitness, max(food_scores), 
+                                      initial_snake, initial_food, food_positions, max_steps)
+            
             if best_fitness > best_fitness_ever:
                 best_fitness_ever = best_fitness
                 best_model_ever = best_model
                 best_food_ever = max(food_scores)
+                manager.save_best_ever(best_model, generation, best_fitness, best_food_ever,
+                                     initial_snake, initial_food, food_positions, max_steps)
             
-            # Print statistik
-            avg_fitness = sum(fitness_scores) / len(fitness_scores)
+            max_food = max(food_scores)
             avg_food = sum(food_scores) / len(food_scores)
-            print(f"\nGeneration {generation + 1}:")
-            print(f"  Bedste fitness: {best_fitness:.1f}")
-            print(f"  Gennemsnit fitness: {avg_fitness:.1f}")
-            print(f"  Bedste mad i denne gen: {max(food_scores)}")
-            print(f"  Gennemsnit mad: {avg_food:.1f}")
-            print(f"  Bedste mad nogensinde: {best_food_ever}")
-            print(f"  Bedste fitness nogensinde: {best_fitness_ever:.1f}")
+            max_food_history.append(max_food)
+            avg_food_history.append(avg_food)
+            
+            plt.figure(figsize=(10, 6))
+            plt.plot(max_food_history, label='Best Food', color='green')
+            plt.plot(avg_food_history, label='Average Food', color='blue')
+            plt.xlabel('Generation')
+            plt.ylabel('Food Eaten')
+            plt.title('Training Progress')
+            plt.legend()
+            plt.grid(True)
+            manager.save_plot(plt)
+            
+            avg_fitness = sum(fitness_scores) / len(fitness_scores)
+            print(f"Generation {generation + 1}:")
+            print(f"  Best fitness: {best_fitness:.1f}")
+            print(f"  Average fitness: {avg_fitness:.1f}")
+            print(f"  Best food in this gen: {max_food}")
+            print(f"  Average food: {avg_food:.1f}")
+            print(f"  Best food ever: {best_food_ever}")
+            print(f"  Best fitness ever: {best_fitness_ever:.1f}")
             print("-" * 40)
             
-            # Sorter og lav næste generation
             sorted_pairs = sorted(zip(fitness_scores, population), key=lambda pair: pair[0], reverse=True)
             population = [x for _, x in sorted_pairs]
             
-            # Lav næste generation
             next_population = []
             next_population.extend(population[:elite_size])
             
             while len(next_population) < population_size:
-                weights = np.arange(len(population), 0, -1)
-                parents = np.random.choice(population, size=2, p=weights/weights.sum())
-                child = crossover(parents[0], parents[1])
+                parent1 = tournament_selection(population, fitness_scores, k=6)
+                parent2 = tournament_selection(population, fitness_scores, k=6)
+                child = single_point_crossover(parent1, parent2)
                 child.mutate(mutation_rate, mutation_scale)
                 next_population.append(child)
-                
+            
             population = next_population
             
     except KeyboardInterrupt:
-        print("\nTræning afbrudt af bruger")
-        pygame.quit()
-    
-    return best_model_ever
+        print("\nTraining interrupted by user")
+        
+    return best_model_ever, max_food_history, avg_food_history
 
 if __name__ == "__main__":
-    # Træningsparametre - samme som i din originale kode
-    POPULATION_SIZE = 200    # Antal modeller i hver generation
-    GENERATIONS = 100       # Antal generationer der trænes
-    MUTATION_RATE = 0.1     # Sandsynlighed for mutation (0-1)
-    MUTATION_SCALE = 0.1    # Hvor meget mutation ændrer vægtene
-    ELITE_SIZE = 10         # Antal af de bedste modeller der føres direkte videre
-    MAX_STEPS = 300        # Maksimalt antal skridt per spil
+    POPULATION_SIZE = 200
+    GENERATIONS = 100
+    MUTATION_RATE = 0.05
+    MUTATION_SCALE = 0.1
+    ELITE_SIZE = 50
+    INITIAL_MAX_STEPS = 200
     
-    # Start træning med visualisering
-    best_model = train_population_visual(
+    best_model = train_population(
         population_size=POPULATION_SIZE,
         generations=GENERATIONS,
         mutation_rate=MUTATION_RATE,
         mutation_scale=MUTATION_SCALE,
         elite_size=ELITE_SIZE,
-        max_steps=MAX_STEPS
+        initial_max_steps=INITIAL_MAX_STEPS
     )

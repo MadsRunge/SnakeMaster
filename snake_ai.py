@@ -271,7 +271,7 @@ if __name__ == "__main__":
     GENERATIONS = 100
     MUTATION_RATE = 0.05
     MUTATION_SCALE = 0.1
-    ELITE_SIZE = 15
+    ELITE_SIZE = 50
     INITIAL_MAX_STEPS = 200
     
     best_model = train_population(
