@@ -9,8 +9,15 @@ import os
 import subprocess
 from pathlib import Path
 
+
+class SnakeState:
+    def __init__(self, random_state, snake_pos=None, food_pos=None):
+        self.random_state = random_state
+        self.snake_pos = snake_pos
+        self.food_pos = food_pos
+
 class RecordingManager:
-    def __init__(self, run_name: str = "training_run_recording"):
+    def __init__(self, run_name: str = "training_run_recording2"):
         self.base_dir = Path(run_name)
         self.recordings_dir = self.base_dir / "recordings"
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -19,34 +26,6 @@ class RecordingManager:
     def save_frame(self, surface: pygame.Surface, generation: int, frame: int):
         filename = f"gen_{generation:03d}_frame_{frame:04d}.png"
         pygame.image.save(surface, str(self.recordings_dir / filename))
-        
-    def verify_files(self):
-        files = sorted(os.listdir(self.recordings_dir))
-        if not files:
-            print("Ingen filer fundet i recordings mappen!")
-            return
-        print(f"Første fil: {files[0]}")
-        print(f"Sidste fil: {files[-1]}")
-        print(f"Antal filer: {len(files)}")
-    
-    def create_video(self, output_file: str, fps: int = 30):
-        self.verify_files()
-        cmd = [
-            'ffmpeg',
-            '-y',
-            '-framerate', str(fps),
-            '-pattern_type', 'sequence',
-            '-start_number', '1',
-            '-i', str(self.recordings_dir / 'gen_%03d_frame_%04d.png'),
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            output_file
-        ]
-        print(f"Kører kommando: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print("FFmpeg fejl:")
-            print(result.stderr)
 
 class SimpleModel:
     def __init__(self, input_size: int = 8, hidden_size: int = 12, output_size: int = 4):
@@ -91,9 +70,14 @@ def two_point_crossover(parent1: SimpleModel, parent2: SimpleModel) -> SimpleMod
     
     return child
 
-def evaluate_fitness(model: SimpleModel, game: SnakeGame, generation: int = None, 
-                    recording_manager: RecordingManager = None, initial_max_steps: int = 200) -> Tuple[float, int]:
+def evaluate_fitness(model: SimpleModel, game: SnakeGame, state: SnakeState = None,
+                    generation: int = None, recording_manager: RecordingManager = None, 
+                    initial_max_steps: int = 200, best_food_ever: int = 0, 
+                    best_fitness: float = 0.0) -> Tuple[float, int]:
     ABSOLUTE_MAX_STEPS = 2000 
+    
+    if state:
+        random.setstate(state.random_state)
     
     model.games_played += 1
     snake = Snake(game=game)
@@ -104,9 +88,7 @@ def evaluate_fitness(model: SimpleModel, game: SnakeGame, generation: int = None
     max_steps = min(initial_max_steps, ABSOLUTE_MAX_STEPS)
     frame = 0
 
-    # Setup recording if needed
     if recording_manager and generation is not None:
-        # Initialize pygame and font system
         if not pygame.get_init():
             pygame.init()
         if not pygame.font.get_init():
@@ -135,7 +117,12 @@ def evaluate_fitness(model: SimpleModel, game: SnakeGame, generation: int = None
         if steps_since_last_food > 50:
             break
 
-        # Record frame if recording manager is provided
+        base_fitness = food_eaten * 75
+        efficiency_bonus = (food_eaten / total_steps) * 75 if total_steps > 0 and food_eaten > 0 else 0
+        fitness = base_fitness + efficiency_bonus
+        if food_eaten == 0:
+            fitness *= 0.5
+
         if recording_manager and generation is not None:
             screen.fill((0, 0, 0))
             pygame.draw.rect(screen, (255, 0, 0), game.block(food.p))
@@ -145,7 +132,11 @@ def evaluate_fitness(model: SimpleModel, game: SnakeGame, generation: int = None
             info_texts = [
                 f"Generation: {generation + 1}",
                 f"Steps: {total_steps}",
-                f"Food: {food_eaten}"
+                f"Food: {food_eaten}",
+                f"Fitness: {fitness:.1f}",
+                f"Best Fitness: {best_fitness:.1f}",
+                f"Total Food i Eksperiment: {best_food_ever}",
+                f"Recorded Frames: {frame}"
             ]
             
             for i, text in enumerate(info_texts):
@@ -173,7 +164,7 @@ def tournament_selection(population: List[SimpleModel], fitness_scores: List[flo
 def train_population(population_size: int = 200, generations: int = 100, 
                      mutation_rate: float = 0.05, mutation_scale: float = 0.1,
                      elite_size: int = 10, initial_max_steps: int = 200,
-                     visual: bool = False):
+                     selection_metric: str = "food"):
     
     recording_manager = RecordingManager()
     game = SnakeGame()
@@ -184,92 +175,91 @@ def train_population(population_size: int = 200, generations: int = 100,
     
     try:
         for generation in range(generations):
-            fitness_scores = []
-            food_scores = []
+            models_and_scores = []
             
             print(f"Evaluerer generation {generation + 1}")
             
-            # Først evaluerer vi alle modeller uden optagelse
             for model in population:
                 game_test = SnakeGame()
+                state = SnakeState(random.getstate())
+                
                 fitness, food_count = evaluate_fitness(
-                    model, game_test, None, None, initial_max_steps
+                    model, game_test, None, None, None, initial_max_steps
                 )
-                fitness_scores.append(fitness)
-                food_scores.append(food_count)
+                
+                models_and_scores.append((model, fitness, food_count, state))
             
-            # Find den bedste model fra denne generation
-            best_idx = np.argmax(fitness_scores)
-            best_fitness = fitness_scores[best_idx]
-            best_model = population[best_idx]
+            if selection_metric == "food":
+                models_and_scores.sort(key=lambda x: (x[2], x[1]), reverse=True)
+            else:
+                models_and_scores.sort(key=lambda x: x[1], reverse=True)
+                
+            best_model, current_fitness, current_food, saved_state = models_and_scores[0]
             
-            # Kør den bedste model igen med optagelse
             game_test = SnakeGame()
-            _, _ = evaluate_fitness(
+            fitness, food = evaluate_fitness(
                 best_model, 
-                game_test, 
+                game_test,
+                saved_state,
                 generation,
                 recording_manager, 
-                initial_max_steps
+                initial_max_steps,
+                best_food_ever,
+                best_fitness_ever
             )
             
-            # Opdater best ever tracking
-            if best_fitness > best_fitness_ever:
-                best_fitness_ever = best_fitness
-                best_model_ever = best_model
-                best_food_ever = max(food_scores)
+            if selection_metric == "food":
+                if food > best_food_ever or (food == best_food_ever and fitness > best_fitness_ever):
+                    best_food_ever = food
+                    best_fitness_ever = fitness
+                    best_model_ever = best_model
+            else:
+                if fitness > best_fitness_ever:
+                    best_fitness_ever = fitness
+                    best_food_ever = food
+                    best_model_ever = best_model
             
-            # Vis visuelt hvis flag er sat
-            if visual:
-                print(f"\nViser den bedste agent fra generation {generation + 1}...")
-                game_viz = SnakeGame()
-                viz_fitness, viz_food = visualize_game(best_model, game_viz, initial_max_steps, generation + 1)
-            
-            # Beregn og vis statistik
-            avg_fitness = sum(fitness_scores) / len(fitness_scores)
-            avg_food = sum(food_scores) / len(food_scores)
-            best_food_current = max(food_scores)
+            fitness_scores = [x[1] for x in models_and_scores]
+            food_scores = [x[2] for x in models_and_scores]
             
             print(f"Generation {generation + 1}:")
-            print(f"  Bedste fitness: {best_fitness:.1f}")
-            print(f"  Gennemsnit fitness: {avg_fitness:.1f}")
-            print(f"  Bedste mad i denne gen: {best_food_current}")
-            print(f"  Gennemsnit mad: {avg_food:.1f}")
+            print(f"  Current fitness: {fitness:.1f}")
+            print(f"  Current food: {food}")
+            print(f"  Gennemsnit fitness: {sum(fitness_scores) / len(fitness_scores):.1f}")
+            print(f"  Gennemsnit mad: {sum(food_scores) / len(food_scores):.1f}")
             print(f"  Bedste mad nogensinde: {best_food_ever}")
             print(f"  Bedste fitness nogensinde: {best_fitness_ever:.1f}")
+            print(f"  Valgt efter: {selection_metric}")
             print("-" * 40)
             
-            # Sorter population efter fitness
-            sorted_pairs = sorted(zip(fitness_scores, population), key=lambda pair: pair[0], reverse=True)
-            population = [x for _, x in sorted_pairs]
-            
-            # Lav næste generation
+            population = [x[0] for x in models_and_scores]
             next_population = []
-            next_population.extend(population[:elite_size])  # Elitism
+            next_population.extend(population[:elite_size])
             
-            # Fyld resten af population med børn
             while len(next_population) < population_size:
-                parent1 = tournament_selection(population, fitness_scores, k=4)
-                parent2 = tournament_selection(population, fitness_scores, k=4)
+                if selection_metric == "food":
+                    parent1 = tournament_selection(population, [x[2] for x in models_and_scores], k=4)
+                    parent2 = tournament_selection(population, [x[2] for x in models_and_scores], k=4)
+                else:
+                    parent1 = tournament_selection(population, [x[1] for x in models_and_scores], k=4)
+                    parent2 = tournament_selection(population, [x[1] for x in models_and_scores], k=4)
+                    
                 child = two_point_crossover(parent1, parent2)
                 child.mutate(mutation_rate, mutation_scale)
                 next_population.append(child)
             
             population = next_population
-        
-        print("Creating evolution video...")
-        recording_manager.create_video(str(recording_manager.base_dir / "evolution.mp4"))
             
     except KeyboardInterrupt:
         print("\nTraining interrupted by user")
-        print("Creating evolution video from recorded frames...")
-        recording_manager.create_video(str(recording_manager.base_dir / "evolution.mp4"))
     
     return best_model_ever
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train Snake AI with Recording')
     parser.add_argument('--visual', action='store_true', help='Vis træningen visuelt')
+    parser.add_argument('--metric', type=str, default="food", choices=["food", "fitness"],
+                        help='Vælg optimeringsmetrik (food eller fitness)')
     args = parser.parse_args()
     
     POPULATION_SIZE = 200
@@ -286,5 +276,5 @@ if __name__ == "__main__":
         mutation_scale=MUTATION_SCALE,
         elite_size=ELITE_SIZE,
         initial_max_steps=INITIAL_MAX_STEPS,
-        visual=args.visual
+        selection_metric=args.metric
     )
