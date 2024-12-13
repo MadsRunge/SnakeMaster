@@ -63,6 +63,55 @@ def single_point_crossover(parent1: SimpleModel, parent2: SimpleModel) -> Simple
 
     return child
 
+
+def two_point_crossover(parent1: SimpleModel, parent2: SimpleModel) -> SimpleModel:
+    """
+    Performs two-point crossover between two parent models.
+    Takes two random cut points and swaps the middle section between parents.
+    
+    Args:
+        parent1 (SimpleModel): First parent model
+        parent2 (SimpleModel): Second parent model
+    
+    Returns:
+        SimpleModel: Child model with mixed weights from both parents
+    """
+    child = SimpleModel()
+    
+    # Two-point crossover for hidden weights
+    h_size = parent1.hidden_weights.size
+    cut1 = random.randint(1, h_size-2)  # Ensure first cut point leaves room for second
+    cut2 = random.randint(cut1+1, h_size-1)  # Ensure second cut point is after first
+    
+    h_flat1 = parent1.hidden_weights.flatten()
+    h_flat2 = parent2.hidden_weights.flatten()
+    
+    # Take start from parent1, middle from parent2, end from parent1
+    child_h = np.concatenate([
+        h_flat1[:cut1],
+        h_flat2[cut1:cut2],
+        h_flat1[cut2:]
+    ])
+    child.hidden_weights = child_h.reshape(parent1.hidden_weights.shape)
+    
+    # Two-point crossover for output weights
+    o_size = parent1.output_weights.size
+    cut1 = random.randint(1, o_size-2)
+    cut2 = random.randint(cut1+1, o_size-1)
+    
+    o_flat1 = parent1.output_weights.flatten()
+    o_flat2 = parent2.output_weights.flatten()
+    
+    # Take start from parent1, middle from parent2, end from parent1
+    child_o = np.concatenate([
+        o_flat1[:cut1],
+        o_flat2[cut1:cut2],
+        o_flat1[cut2:]
+    ])
+    child.output_weights = child_o.reshape(parent1.output_weights.shape)
+    
+    return child
+
 def evaluate_fitness(model: SimpleModel, game: SnakeGame, initial_max_steps: int = 200) -> Tuple[float, int]:
     ABSOLUTE_MAX_STEPS = 2000 
     
@@ -254,7 +303,7 @@ def train_population(population_size: int = 200, generations: int = 100,
         while len(next_population) < population_size:
             parent1 = tournament_selection(population, fitness_scores, k=4)
             parent2 = tournament_selection(population, fitness_scores, k=4)
-            child = single_point_crossover(parent1, parent2)
+            child = two_point_crossover(parent1, parent2)
             child.mutate(mutation_rate, mutation_scale)
             next_population.append(child)
         
@@ -271,7 +320,7 @@ if __name__ == "__main__":
     GENERATIONS = 100
     MUTATION_RATE = 0.05
     MUTATION_SCALE = 0.1
-    ELITE_SIZE = 50
+    ELITE_SIZE = 70
     INITIAL_MAX_STEPS = 200
     
     best_model = train_population(
